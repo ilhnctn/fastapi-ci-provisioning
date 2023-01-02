@@ -1,0 +1,174 @@
+variables:
+  GCP_SERVICE_KEY: "very-secure-base64-thing"
+  GCP_PROJECT_ID: "some-super-project"
+  APP_USER: "appuser"
+
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_TAG'
+
+stages:
+  - lint
+  - provision
+  - test
+  - qa
+  - package
+  - deploy
+
+#.infra-provision-rule:
+#  rules:
+#    - if: '$CI_COMMIT_TAG'
+#      changes:
+#        - terraform/*.tf
+#          when: on_success
+#        - when: never
+#
+#.cloud-deployment-rule:
+#  rules:
+#    - if: $RELEASE_ENV == "1"
+#      when: manual
+#      allow_failure: true
+
+.code-changed-rule:
+  rules:
+    - changes:
+      - app/*.py
+      - clients/*.py
+      - assets/*.{py,html}
+      - poetry.lock
+
+export-pip-requirements:
+  stage: lint
+  image:
+    name: python:3.11.1-buster
+    entrypoint: [ "" ]
+  before_script:
+    - pip3 install poetry
+  script:
+    - poetry export -o requirements.txt --without-hashes
+    - poetry export --dev -o requirements-dev.txt --without-hashes
+  artifacts:
+    paths:
+      - requirements.txt
+      - requirements-dev.txt
+    expire_in: 1 hour
+
+black:
+  stage: lint
+  image: python:3.11.1-buster
+  script:
+    - pip3 install black
+    - black --check .
+
+reorder-python-imports:
+  stage: lint
+  image: python:3.11.1-buster
+  script:
+    # TODO: Build & use a dev image
+    - pip3 install reorder-python-imports
+    - reorder-python-imports $(find . | grep "\.py$")
+
+integration-test:
+  stage: test
+  image: python:3.11.1-buster
+  before_script:
+    - pip3 install -r requirements/development.txt
+  script:
+    - python3 -m pytest tests
+  rules:
+    - !reference [.code-changed-rule, rules]
+
+coverage:
+  stage: qa
+  image: python:3.11.1-buster
+  dependencies:
+    - export-pip-requirements
+  before_script:
+    - pip3 install -r requirements/development.txt
+    - coverage run -m pytest
+    - coverage html
+    - coverage report -m
+  script:
+    - python3 -m coverage report --fail-under=80
+  rules:
+    - !reference [.code-changed-rule, rules]
+
+package:
+  stage: package
+  before_script:
+    - pip3 install poetry
+  image:
+    name: python:3.11.1-buster
+  dependencies:
+    - export-pip-requirements
+  script:
+    - "echo pyproject version: $(poetry version -s); echo tag version: ${CI_COMMIT_TAG:1}"
+    - test $(poetry version -s) == ${CI_COMMIT_TAG:1}
+    - poetry config repositories.gitlab https://${PY_PYPI_SERVER}
+    - echo publish --repository gitlab --username gitlab-ci-token --password ${CI_JOB_TOKEN}
+    - poetry publish --build --repository gitlab --username gitlab-ci-token --password ${CI_JOB_TOKEN}
+  artifacts:
+    paths:
+      - dist/*
+    expire_in: 1 hour
+  allow_failure: true
+  only:
+    - tags
+
+containerize:
+  image: docker:latest
+  services:
+    - docker:dind
+  before_script:
+    - echo $CI_REGISTRY_PASSWORD | docker login -u $CI_REGISTRY_USER $CI_REGISTRY --password-stdin
+  dependencies:
+    - package
+  stage: package
+  script:
+    - >
+      docker build
+      -f Dockerfile
+      --build-arg USER=$APP_USER
+      --pull
+      --tag $CI_REGISTRY_IMAGE:$CI_COMMIT_TAG
+      .
+    - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_TAG
+    - docker tag $CI_REGISTRY_IMAGE:$CI_COMMIT_TAG $CI_REGISTRY_IMAGE:latest
+    - docker push $CI_REGISTRY_IMAGE:latest
+  only:
+    - tags
+
+#provision:
+#  stage: provision
+#  image:
+#    name: hashicorp/terraform:latest
+#    entrypoint:
+#      - /usr/bin/env
+#      - "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+#  before_script:
+#    - terraform init
+#  cache:
+#    key: terraform
+#    paths:
+#      - .terraform
+#  rules:
+#    - !reference [.cloud-provision-rule, rules]
+#  allow_failure: true
+#
+#deploy-cloudrun:
+#  # TODO: **NOTE** Not in use due to billing account
+#  stage: deploy
+#  image: google/cloud-sdk
+#  services:
+#    - docker:dind
+#  script:
+#    # Google Cloud Service Accounts created & granted
+#    - echo $GCP_SERVICE_KEY > gcloud-service-key.json
+#    - gcloud auth activate-service-account --key-file gcloud-service-key.json
+#    - gcloud config set project $GCP_PROJECT_ID
+#    - gcloud builds submit . --config=cloudrun.yaml
+#  # Only when a new tag is set, run this stage
+#  rules:
+#    - !reference [.cloud-deployment-rule, rules]
+#  allow_failure: true

@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+
+{% block content %}
+<!--
+<h1>
+    <title>User List</title>
+</h1>
+<h1>Showing {{ response["total"] }} from page: {{ response["page"] }} </h1>
+-->
+<table class="table">
+    <thead class="thead-dark">
+    <tr>
+        <th scope="col">ID</th>
+        <th scope="col">First Name</th>
+        <th scope="col">Last Name</th>
+        <th scope="col">Email</th>
+        <th scope="col">Avatar</th>
+    </tr>
+    </thead>
+    <tbody>
+    {% for user in response["data"] %}
+    <tr>
+        <th scope="row"><b>{{ user.id }} </b></th>
+        <td><b>{{ user.first_name }} </b></td>
+        <td><b>{{ user.last_name }} </b></td>
+        <td><b>{{ user.email }} </b></td>
+        <td>
+            <div class="avatar avatar-xs me-2">
+                <img src="{{ user.avatar }}" alt="Photo of {{ user.first_name }}." class="rounded-circle">
+            </div>
+        </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+<div class="container-fluid">
+{% if response.get("total_pages") %}
+    {% for page_number in range(1, response["total_pages"] + 1) %}
+        {% if response["total_pages"] == page_number %}
+            <button class="btn btn-outline-primary active">
+                <span>{{ page_number }} <span class="sr-only">(current)</span></span>
+            </button>
+        {% else %}
+            <a href="?page={{ page_number }}" class="btn btn-outline-primary">
+                {{ page_number }}
+            </a>
+        {% endif %}
+    {% endfor %}
+{% endif %}
+</div>
+
+{% endblock %}
